@@ -11,8 +11,7 @@ services:
     volumes:
       - ./../postgres_data_warehouse:/data/postgres
     ports:
-      # Пробрасываем порт 5434 на хост: 5432 может быть занят бэкендом (Symfony), 5433 - канбаном
-      - "${DB_PORT:-5434}:5432"
+      - "${DB_PORT:-5435}:5432"
     networks:
       - warehouse-net
 
