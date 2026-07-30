@@ -1,0 +1,31 @@
+services:
+
+  warehouse_dbgate:
+    container_name: warehouse_dbgate
+    image: dbgate/dbgate:5.5.6-alpine
+    restart: always
+    ports:
+      # Используем 8089 порт, чтобы не конфликтовать с другими сервисами
+      - 8089:3000
+    # Монтируем volume базы, чтобы dbgate мог работать с данными при необходимости
+    volumes:
+      - ./../postgres_data_warehouse:/data/postgres
+    environment:
+      CONNECTIONS: con1,con2,con3,con4
+
+      LABEL_con1: Warehouse Postgres
+      # Имя контейнера базы в нашей докер-сети warehouse-net
+      SERVER_con1: warehouse_postgres
+      USER_con1: ${DB_USER:-root}
+      PASSWORD_con1: ${DB_PASSWORD:-password}
+      # Внутри докер-сети база слушает стандартный порт 5432
+      PORT_con1: 5432
+      ENGINE_con1: postgres@dbgate-plugin-postgres
+    networks:
+      - warehouse-net
+
+networks:
+  warehouse-net:
+    # Указываем, что сеть создана другим docker-compose (основным)
+    external: true
+    name: warehouse-net

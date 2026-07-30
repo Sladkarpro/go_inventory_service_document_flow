@@ -1,0 +1,364 @@
+package usersync
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	amqp "github.com/rabbitmq/amqp091-go"
+
+	"go_warehouse_service/internal/config"
+	"go_warehouse_service/internal/helper"
+	"go_warehouse_service/internal/model"
+	"go_warehouse_service/internal/repository"
+)
+
+const (
+	routingKeyUserUpserted = "user.upserted"
+	routingKeyUserDeleted  = "user.deleted"
+)
+
+var errInvalidMessage = errors.New("invalid user sync message")
+
+// Consumer держит реплику users в актуальном состоянии по событиям монолита.
+//
+// ⚠ События описывают только ИЗМЕНЕНИЯ, и topic exchange выбрасывает сообщение,
+// если под него нет очереди. Всё опубликованное до первого запуска этого
+// consumer'а потеряно. Стартовое наполнение делает SyncService.Bootstrap —
+// одно без другого реплику не наполнит.
+type Consumer struct {
+	dsn            string
+	exchange       string
+	queue          string
+	repo           *repository.UserRepository
+	prefetchCount  int
+	reconnectDelay time.Duration
+	clock          helper.Clock
+}
+
+func NewConsumer(cfg *config.Config, repo *repository.UserRepository) *Consumer {
+	return &Consumer{
+		dsn:            cfg.RabbitMQDSN,
+		exchange:       cfg.RabbitMQExchange,
+		queue:          cfg.UserSyncQueue,
+		repo:           repo,
+		prefetchCount:  10,
+		reconnectDelay: 5 * time.Second,
+		clock:          cfg.Clock,
+	}
+}
+
+func (c *Consumer) Run(ctx context.Context) error {
+	// Пустой DSN — не ошибка: сервис поднимается и работает, просто без
+	// живой синхронизации. Падать здесь означало бы не дать запустить
+	// инвентаризацию из-за недоступной шины.
+	if strings.TrimSpace(c.dsn) == "" {
+		slog.Warn("RabbitMQ DSN не задан, синхронизация пользователей отключена")
+		<-ctx.Done()
+		return nil
+	}
+
+	for {
+		if err := c.consume(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			slog.Error("RabbitMQ consumer синхронизации пользователей остановился", "error", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(c.reconnectDelay):
+		}
+	}
+}
+
+func (c *Consumer) consume(ctx context.Context) error {
+	conn, err := amqp.Dial(c.dsn)
+	if err != nil {
+		return fmt.Errorf("connect rabbitmq: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("open rabbitmq channel: %w", err)
+	}
+	defer func() { _ = ch.Close() }()
+
+	if err := ch.ExchangeDeclare(c.exchange, "topic", true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare exchange %s: %w", c.exchange, err)
+	}
+
+	// Своя durable-очередь, привязанная к тем же ключам, что и очередь канбана.
+	// Publisher монолита менять не надо.
+	queue, err := ch.QueueDeclare(c.queue, true, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("declare queue %s: %w", c.queue, err)
+	}
+
+	for _, routingKey := range []string{routingKeyUserUpserted, routingKeyUserDeleted} {
+		if err := ch.QueueBind(queue.Name, routingKey, c.exchange, false, nil); err != nil {
+			return fmt.Errorf("bind queue %s to %s: %w", queue.Name, routingKey, err)
+		}
+	}
+
+	if err := ch.Qos(c.prefetchCount, 0, false); err != nil {
+		return fmt.Errorf("set qos: %w", err)
+	}
+
+	deliveries, err := ch.Consume(queue.Name, "go-warehouse-user-sync", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("start consuming queue %s: %w", queue.Name, err)
+	}
+
+	connClosed := conn.NotifyClose(make(chan *amqp.Error, 1))
+	chClosed := ch.NotifyClose(make(chan *amqp.Error, 1))
+
+	slog.Info("RabbitMQ consumer синхронизации пользователей запущен",
+		"exchange", c.exchange, "queue", queue.Name)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case amqpErr := <-connClosed:
+			if amqpErr != nil {
+				return fmt.Errorf("rabbitmq connection closed: %w", amqpErr)
+			}
+			return errors.New("rabbitmq connection closed")
+		case amqpErr := <-chClosed:
+			if amqpErr != nil {
+				return fmt.Errorf("rabbitmq channel closed: %w", amqpErr)
+			}
+			return errors.New("rabbitmq channel closed")
+		case delivery, ok := <-deliveries:
+			if !ok {
+				return errors.New("rabbitmq deliveries channel closed")
+			}
+			c.handleDelivery(ctx, delivery)
+		}
+	}
+}
+
+func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
+	requeue, err := c.processDelivery(ctx, delivery)
+	if err != nil {
+		// Повторяем ТОЛЬКО временные ошибки (например, БД недоступна).
+		// Постоянные — битый JSON, слишком длинное значение, нарушение
+		// констрейнта — повтором не лечатся: requeue такого сообщения
+		// зацикливает consumer и роняет сервис. Ровно это уже случалось.
+		if requeue && !isPermanent(err) {
+			slog.Error("Событие синхронизации пользователя: временная ошибка, будет повторено",
+				"routing_key", delivery.RoutingKey, "error", err)
+			if ackErr := delivery.Nack(false, true); ackErr != nil {
+				slog.Error("Не удалось вернуть сообщение в RabbitMQ", "error", ackErr)
+			}
+			return
+		}
+
+		slog.Warn("Событие синхронизации пользователя снято с очереди",
+			"routing_key", delivery.RoutingKey, "error", err)
+		if ackErr := delivery.Nack(false, false); ackErr != nil {
+			slog.Error("Не удалось снять сообщение с очереди RabbitMQ", "error", ackErr)
+		}
+		return
+	}
+
+	if err := delivery.Ack(false); err != nil {
+		slog.Error("Не удалось подтвердить сообщение RabbitMQ", "error", err)
+	}
+}
+
+// isPermanent сообщает, что повтор бесполезен: сообщение отравленное
+// и должно уйти из очереди, а не крутиться в ней.
+func isPermanent(err error) bool {
+	if errors.Is(err, errInvalidMessage) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && len(pgErr.Code) >= 2 {
+		switch pgErr.Code[:2] {
+		case "22", // data exception (22001 value too long, 22P02 invalid text, ...)
+			"23": // integrity constraint violation (not-null, unique, check, fk)
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Consumer) processDelivery(ctx context.Context, delivery amqp.Delivery) (bool, error) {
+	payload, err := decodePayload(delivery.Body)
+	if err != nil {
+		return false, err
+	}
+
+	eventType, err := normalizeEvent(payload.Event, delivery.RoutingKey)
+	if err != nil {
+		return false, err
+	}
+
+	userID := payload.userID()
+	if userID <= 0 {
+		return false, fmt.Errorf("%w: user id is empty", errInvalidMessage)
+	}
+
+	if eventType == "deleted" {
+		deletedAt := payload.deletedAt()
+		if deletedAt == nil {
+			fallback := delivery.Timestamp
+			if fallback.IsZero() {
+				fallback = c.clock.Now()
+			}
+			deletedAt = &fallback
+		}
+
+		if err := c.repo.MarkUserDeleted(ctx, userID, *deletedAt); err != nil {
+			return true, err
+		}
+
+		// Уволенный знает пароли. Отчёт wh_v_credentials_to_rotate ответит,
+		// какие именно менять; здесь только фиксируем факт в логе.
+		slog.Info("Пользователь помечен удалённым — проверьте /credentials/to-rotate",
+			"user_id", userID)
+		return false, nil
+	}
+
+	user, err := payload.user()
+	if err != nil {
+		return false, err
+	}
+
+	if err := c.repo.UpsertUsers(ctx, []model.User{user}); err != nil {
+		return true, err
+	}
+
+	slog.Info("Пользователь обновлён из RabbitMQ-события", "user_id", user.ID)
+	return false, nil
+}
+
+func decodePayload(body []byte) (userSyncPayload, error) {
+	var payload userSyncPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return payload, fmt.Errorf("%w: decode json: %v", errInvalidMessage, err)
+	}
+	return payload, nil
+}
+
+func normalizeEvent(messageEvent string, routingKey string) (string, error) {
+	eventType := strings.TrimSpace(messageEvent)
+	if eventType == "" {
+		eventType = strings.TrimSpace(routingKey)
+	}
+	eventType = strings.TrimPrefix(eventType, "user.")
+
+	switch eventType {
+	case "upserted", "deleted":
+		return eventType, nil
+	default:
+		return "", fmt.Errorf("%w: unknown event %q", errInvalidMessage, eventType)
+	}
+}
+
+// userSyncPayload принимает и camelCase, и snake_case: сериализатор монолита
+// исторически отдавал оба варианта.
+type userSyncPayload struct {
+	Event          string       `json:"event"`
+	UserID         int64        `json:"userId"`
+	UserIDSnake    int64        `json:"user_id"`
+	Login          string       `json:"login"`
+	Lastname       string       `json:"lastname"`
+	Firstname      string       `json:"firstname"`
+	Patronymic     *string      `json:"patronymic"`
+	DeletedAt      nullableTime `json:"deletedAt"`
+	DeletedAtSnake nullableTime `json:"deleted_at"`
+}
+
+func (p userSyncPayload) userID() int64 {
+	if p.UserID != 0 {
+		return p.UserID
+	}
+	return p.UserIDSnake
+}
+
+func (p userSyncPayload) deletedAt() *time.Time {
+	if p.DeletedAt.Time != nil {
+		return p.DeletedAt.Time
+	}
+	return p.DeletedAtSnake.Time
+}
+
+func (p userSyncPayload) user() (model.User, error) {
+	userID := p.userID()
+	if userID <= 0 {
+		return model.User{}, fmt.Errorf("%w: user id is empty", errInvalidMessage)
+	}
+	if strings.TrimSpace(p.Login) == "" {
+		return model.User{}, fmt.Errorf("%w: login is empty", errInvalidMessage)
+	}
+
+	return model.User{
+		ID:         userID,
+		Login:      p.Login,
+		Lastname:   p.Lastname,
+		Firstname:  p.Firstname,
+		Patronymic: p.Patronymic,
+		DeletedAt:  p.deletedAt(),
+	}, nil
+}
+
+type nullableTime struct {
+	Time *time.Time
+}
+
+func (t *nullableTime) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		t.Time = nil
+		return nil
+	}
+
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if strings.TrimSpace(value) == "" {
+		t.Time = nil
+		return nil
+	}
+
+	parsed, err := parseTime(value)
+	if err != nil {
+		return err
+	}
+	t.Time = &parsed
+	return nil
+}
+
+func parseTime(value string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05-0700",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05-0700",
+		"2006-01-02 15:04:05",
+	}
+
+	var lastErr error
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC().Truncate(time.Second), nil
+		}
+		lastErr = err
+	}
+
+	return time.Time{}, fmt.Errorf("parse time %q: %w", value, lastErr)
+}

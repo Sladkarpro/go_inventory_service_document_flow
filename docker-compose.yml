@@ -1,0 +1,56 @@
+services:
+  warehouse_db:
+    image: postgres:16.4
+    container_name: warehouse_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-root}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: ${DB_NAME:-warehouse_db}
+      PGDATA: /data/postgres
+    volumes:
+      - ./../postgres_data_warehouse:/data/postgres
+    ports:
+      # Пробрасываем порт 5434 на хост: 5432 может быть занят бэкендом (Symfony), 5433 - канбаном
+      - "${DB_PORT:-5434}:5432"
+    networks:
+      - warehouse-net
+
+  warehouse_service:
+    build:
+      context: .
+      dockerfile: ./docker_env/go/Dockerfile
+    container_name: warehouse_service
+    restart: unless-stopped
+    depends_on:
+      - warehouse_db
+    env_file:
+      - .env
+    volumes:
+      # Прокидываем текущую папку с бинарником main
+      - ./:/app
+      # Прокидываем публичный ключ JWT из папки Symfony
+      - ./../symfony_documents_flow/config/jwt/public.pem:/config/jwt/public.pem:ro
+    environment:
+      # Переопределяем путь к ключу внутри контейнера
+      - JWT_PUBLIC_KEY_PATH=/config/jwt/public.pem
+      # Переопределяем хост БД для докера
+      - DB_HOST=warehouse_db
+      # Внутри Docker-сети Postgres всегда слушает на 5432 (5434 - это только проброс на хост)
+      - DB_PORT=5432
+      # RabbitMQ живёт в общей project-net сети рядом с Symfony
+      - RABBITMQ_TRANSPORT_DSN=amqp://guest:guest@rabbitmq:5672/
+    # Не надо пробрасывать наружу. Порт пробросит сам nginx
+    # ports:
+    #   - "${SERVER_PORT:-8087}:8087"
+    networks:
+      - warehouse-net
+      - project-net
+
+networks:
+  warehouse-net:
+    name: warehouse-net
+    driver: bridge
+
+  project-net:
+    external: true
