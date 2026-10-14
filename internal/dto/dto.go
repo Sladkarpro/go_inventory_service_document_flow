@@ -30,8 +30,6 @@ func NewPagination(total int64, limit, offset int) Pagination {
 	return Pagination{Total: total, Limit: limit, Offset: offset}
 }
 
-// ---------------------------------------------------------------------------
-
 type ItemResponse struct {
 	ID         int64          `json:"id"`
 	Name       string         `json:"name"`
@@ -59,8 +57,6 @@ func MapItems(items []model.Item) []ItemResponse {
 	}
 	return out
 }
-
-// ---------------------------------------------------------------------------
 
 type HoldingResponse struct {
 	ID       int64  `json:"id"`
@@ -149,8 +145,6 @@ func MapHoldings(hs []model.Holding) []HoldingResponse {
 	return out
 }
 
-// ---------------------------------------------------------------------------
-
 type WarehouseResponse struct {
 	ID                int64   `json:"id"`
 	Name              string  `json:"name"`
@@ -185,8 +179,6 @@ func MapWarehouses(ws []model.Warehouse) []WarehouseResponse {
 	}
 	return out
 }
-
-// ---------------------------------------------------------------------------
 
 // CredentialResponse — ВСЁ, кроме секрета.
 // ⚠ Поля для шифротекста здесь нет и быть не должно: секрет уходит клиенту
@@ -244,8 +236,6 @@ func MapToRotate(rows []model.CredentialToRotateRow) []ToRotateResponse {
 	}
 	return out
 }
-
-// ---------------------------------------------------------------------------
 
 type LossResponse struct {
 	ItemID           int64   `json:"itemId"`
@@ -320,8 +310,6 @@ func MapSummary(rows []model.ItemTotalRow) []SummaryResponse {
 	}
 	return out
 }
-
-// ---------------------------------------------------------------------------
 
 func decStr(d *decimal.Decimal) *string {
 	if d == nil {

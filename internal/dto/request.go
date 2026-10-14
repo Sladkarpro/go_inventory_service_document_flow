@@ -34,9 +34,8 @@ type CreateHoldingRequest struct {
 }
 
 type UpdateHoldingRequest struct {
-	// QtyActual: строка «12.5» — проставить факт; явный null — сбросить
-	// в «ещё не считали». Отсутствие поля — не трогать. Различить эти три
-	// случая обычным *string нельзя, поэтому здесь json.RawMessage.
+	// QtyActual: строка «12.5» — проставить факт; null или отсутствие поля — не менять.
+	// ClearQtyActual сбрасывает факт в «ещё не считали» и имеет приоритет над QtyActual.
 	QtyActual      *string `json:"qtyActual"`
 	ClearQtyActual bool    `json:"clearQtyActual"`
 

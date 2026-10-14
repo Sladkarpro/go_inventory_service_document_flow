@@ -51,8 +51,6 @@ func requireAdmin(ctx context.Context) (middleware.UserClaims, error) {
 	return user, nil
 }
 
-// ---------------------------------------------------------------------------
-
 type ItemService struct {
 	items    *repository.ItemRepository
 	holdings *repository.HoldingRepository
@@ -96,8 +94,6 @@ func (s *ItemService) Update(ctx context.Context, id int64, upd repository.ItemU
 	}
 	return s.items.Update(ctx, id, upd)
 }
-
-// ---------------------------------------------------------------------------
 
 type HoldingService struct {
 	holdings *repository.HoldingRepository
@@ -180,8 +176,6 @@ func (s *HoldingService) Rooms(ctx context.Context) ([]string, error) {
 	}
 	return s.holdings.Rooms(ctx)
 }
-
-// ---------------------------------------------------------------------------
 
 type WarehouseService struct {
 	warehouses *repository.WarehouseRepository

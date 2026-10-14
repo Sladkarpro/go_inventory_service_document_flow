@@ -27,7 +27,7 @@ func NewCredentialRepository(db *pgxpool.Pool) *CredentialRepository {
 	return &CredentialRepository{db: db}
 }
 
-// listColumns — БЕЗ secret_cipher. Менять с осторожностью.
+// credentialListColumns — БЕЗ secret_cipher. Менять с осторожностью.
 const credentialListColumns = `c.id, c.holding_id, c.kind, c.title, c.url, c.login,
 	(c.secret_cipher IS NOT NULL) AS has_secret,
 	c.key_version, c.rotated_at, c.wiped_at, c.note, c.created_at, c.updated_at`
@@ -216,7 +216,7 @@ func (r *CredentialRepository) Update(
 //
 // ⚠ Из отчёта о ротации затёртая запись УХОДИТ, и так и задумано:
 // представление wh_v_credentials_to_rotate отбирает по `c.wiped_at IS NULL`
-// (migrations/00001, строка ~380). Ротировать там нечего — секрета больше нет.
+// (migrations/00001_init_warehouse_schema.sql). Ротировать там нечего — секрета больше нет.
 // Прежняя редакция этого комментария обещала обратное («остаётся видна
 // в отчёте о ротации»), что расходилось с SQL; расхождение нашло состязательное
 // ревью.

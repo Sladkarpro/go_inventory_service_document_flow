@@ -23,7 +23,6 @@ type Config struct {
 	RabbitMQExchange string
 	UserSyncQueue    string
 
-	// DB configuration
 	DBHost     string
 	DBPort     int
 	DBUser     string

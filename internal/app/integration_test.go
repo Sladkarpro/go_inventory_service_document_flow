@@ -28,7 +28,6 @@ import (
 	"go_warehouse_service/internal/helper"
 )
 
-// ---------------------------------------------------------------------------
 // Сквозная проверка сервиса против НАСТОЯЩЕЙ базы.
 //
 // Проверяет ровно то, что перечислено в критериях приёмки:
@@ -45,7 +44,6 @@ import (
 //	  -e POSTGRES_DB=warehouse_test -p 55434:5432 postgres:16.4
 //	GOOSE_DRIVER=postgres GOOSE_DBSTRING=... goose up
 //	WAREHOUSE_TEST_DSN="postgresql://root:password@localhost:55434/warehouse_test?sslmode=disable" go test ./internal/app/...
-// ---------------------------------------------------------------------------
 
 type testEnv struct {
 	t       *testing.T
@@ -287,8 +285,6 @@ func (e *testEnv) count(query string, args ...any) int {
 	}
 	return n
 }
-
-// ---------------------------------------------------------------------------
 
 // TestAuth — критерий приёмки №1.
 func TestAuth(t *testing.T) {
@@ -964,7 +960,7 @@ func TestImportRepeatAfterSplit(t *testing.T) {
 // проверена по коду:
 //   - выбор уменьшаемого агрегата зависел от ПОРЯДКА обработки 2174 строк
 //     реестра (ORDER BY qty_expected DESC по полю, которое тут же меняется,
-//     import_service.go:461 и :493) — из финального состояния он не выводится;
+//     import_service.go, splitAggregate, шаги 1 и 2) — из финального состояния он не выводится;
 //   - предикат «был расщеплён» отсутствует: POST /holdings проверяет только
 //     неотрицательность (inventory_service.go), поэтому номерная строка,
 //     заведённая владельцем руками, от расщеплённой неотличима;

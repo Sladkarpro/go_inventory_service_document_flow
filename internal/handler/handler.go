@@ -23,8 +23,6 @@ func decode(r *http.Request, dst any) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-
 type ItemHandler struct {
 	items *service.ItemService
 }
@@ -96,8 +94,6 @@ func (h *ItemHandler) Update() http.HandlerFunc {
 		helper.WriteJSON(w, http.StatusOK, map[string]any{"item": dto.MapItem(item)})
 	}
 }
-
-// ---------------------------------------------------------------------------
 
 type HoldingHandler struct {
 	holdings *service.HoldingService
@@ -288,8 +284,6 @@ func (h *HoldingHandler) Rooms() http.HandlerFunc {
 		helper.WriteJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
 	}
 }
-
-// ---------------------------------------------------------------------------
 
 type WarehouseHandler struct {
 	warehouses *service.WarehouseService

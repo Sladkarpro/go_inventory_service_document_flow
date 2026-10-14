@@ -195,8 +195,6 @@ func (r *UserRepository) Count(ctx context.Context) (int64, error) {
 	return n, err
 }
 
-// ---------------------------------------------------------------------------
-
 type DepartmentRepository struct {
 	db    *pgxpool.Pool
 	clock helper.Clock
