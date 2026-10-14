@@ -376,7 +376,7 @@ func parseRegistry(path string) (*Result, error) {
 				SourceRow:    r,
 			}
 			if _, ok := model.NormalizeInvNumber(row.InvNumber); !ok {
-				// заглушка «б/н» — предмет есть, номера у него нет
+				// «б/н» задаёт ожидаемое количество без номера, но не подтверждает факт.
 				row.InvNumber = ""
 			} else if why := suspiciousInvNumber(row.InvNumber); why != "" {
 				// Строка импортируется как есть — но владелец обязан её увидеть.

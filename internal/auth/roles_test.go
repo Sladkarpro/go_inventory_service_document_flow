@@ -26,9 +26,9 @@ func TestAdminGetsInventoryAdmin(t *testing.T) {
 		t.Error("ROLE_ADMIN обязан иметь право чтения")
 	}
 
-	// Транзитивность: ROLE_ADMIN → ROLE_INVENTORY_ADMIN → {MOL, VIEWER, DEPT_VIEWER}.
+	// Транзитивность: ROLE_ADMIN → ROLE_INVENTORY_ADMIN → ROLE_INVENTORY_MANAGER.
 	// Разворот на один уровень эту цепочку не прошёл бы.
-	for _, want := range []string{RoleInventoryMol, RoleInventoryViewer, RoleInventoryDeptViewer, RoleUser} {
+	for _, want := range []string{RoleInventoryManager, RoleUser} {
 		if !Has(jwtRoles, want) {
 			t.Errorf("ROLE_ADMIN обязан транзитивно получать %s", want)
 		}
@@ -42,7 +42,7 @@ func TestAnalyticGetsNoInventoryRoles(t *testing.T) {
 	roles := []string{RoleAnalytic}
 
 	for _, forbidden := range []string{
-		RoleInventoryAdmin, RoleInventoryMol, RoleInventoryViewer, RoleInventoryDeptViewer,
+		RoleInventoryAdmin, RoleInventoryManager, RoleInventoryMol, RoleInventoryViewer, RoleInventoryDeptViewer,
 	} {
 		if Has(roles, forbidden) {
 			t.Errorf("ROLE_ANALYTIC не должен получать %s", forbidden)
@@ -75,11 +75,10 @@ func TestInventoryBranchesAreParallel(t *testing.T) {
 		}
 	}
 
-	// Каждая из трёх ветвей обязана давать ROLE_USER: иерархия в монолите
-	// это задаёт, и расхождение поймает TestHierarchyMatchesSecurityYaml.
+	// Прежние роли больше не входят в иерархию Symfony и ничего не наследуют.
 	for _, r := range []string{RoleInventoryMol, RoleInventoryViewer, RoleInventoryDeptViewer} {
-		if !Has([]string{r}, RoleUser) {
-			t.Errorf("%s обязан давать ROLE_USER", r)
+		if Has([]string{r}, RoleUser) {
+			t.Errorf("%s больше не должен наследовать ROLE_USER", r)
 		}
 	}
 
@@ -119,10 +118,9 @@ func TestDeptViewerGrantsNothingUntilScopeExists(t *testing.T) {
 		t.Error("ROLE_INVENTORY_DEPT_VIEWER не должен давать права администратора")
 	}
 
-	// При этом администратор инвентаризации по-прежнему получает её транзитивно:
-	// иерархия монолита не меняется, меняется только смысл самой роли.
-	if !Has([]string{RoleInventoryAdmin}, RoleInventoryDeptViewer) {
-		t.Error("иерархия поехала: администратор обязан транзитивно получать роль")
+	// Администратор больше не наследует прежнюю роль в иерархии Symfony.
+	if Has([]string{RoleInventoryAdmin}, RoleInventoryDeptViewer) {
+		t.Error("администратор больше не должен наследовать ROLE_INVENTORY_DEPT_VIEWER")
 	}
 }
 

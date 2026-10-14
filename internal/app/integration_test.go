@@ -798,6 +798,7 @@ func TestImportRealFiles(t *testing.T) {
 	// и сводка сложила бы их вместе.
 	if reg := inventFile(t, "инвентаризация"); reg != "" {
 		before := totalQty
+		lastID := e.count(`SELECT COALESCE(MAX(id), 0) FROM wh_holding`)
 		rep := upload(reg, "registry")
 
 		var after string
@@ -807,11 +808,14 @@ func TestImportRealFiles(t *testing.T) {
 		created := int(rep["holdingsCreated"].(float64))
 		t.Logf("реестр: расщеплено %d, создано %d строк", split, created)
 
-		// Расщепление суммы не меняет; строки, под которые агрегата не нашлось,
-		// заводятся излишком с qty_expected = 0 и тоже не меняют сумму.
-		if after != before {
+		// Номерные строки суммы не меняют. Новые «б/н» добавляют ожидаемое
+		// количество; исключаем его вместе с отщеплёнными от них экземплярами.
+		afterWithoutNewAggregates := e.scalar(`SELECT (SUM(qty_expected) - COALESCE(
+			SUM(qty_expected + qty_split) FILTER (WHERE id > $1 AND inv_number_norm IS NULL), 0))::text
+			FROM wh_holding`, lastID)
+		if afterWithoutNewAggregates != before {
 			t.Errorf("после импорта реестра сумма стала %s (была %s) — "+
-				"реестр добавил количество вместо расщепления", after, before)
+				"реестр изменил количество помимо новых безномерных строк", afterWithoutNewAggregates, before)
 		}
 
 		// Номерные строки обязаны появиться и иметь ровно 0 или 1 в учёте.
@@ -833,9 +837,9 @@ func TestImportRealFiles(t *testing.T) {
 		upload(reg, "registry")
 		var afterTwice string
 		_ = e.db.QueryRow(ctx, `SELECT SUM(qty_expected)::text FROM wh_holding`).Scan(&afterTwice)
-		if afterTwice != before {
+		if afterTwice != after {
 			t.Errorf("повторный импорт реестра изменил сумму: %s против %s "+
-				"(расщепление выполнено дважды)", afterTwice, before)
+				"(расщепление выполнено дважды)", afterTwice, after)
 		}
 		var negative int
 		_ = e.db.QueryRow(ctx,

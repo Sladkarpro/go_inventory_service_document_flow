@@ -178,6 +178,17 @@ func (s *ImportService) Import(ctx context.Context, path string, format parser.F
 				}
 
 			case parser.FormatRegistry:
+				if in.InvNumber == nil {
+					// «б/н» не подтверждает пересчёт и не заменяет уже учтённый агрегат.
+					created, _, err := s.upsertHolding(ctx, tx, in, true)
+					if err != nil {
+						return err
+					}
+					if created {
+						report.HoldingsCreated++
+					}
+					continue
+				}
 				// Реестр РАСЩЕПЛЯЕТ: уменьшает агрегат на 1 и заводит экземпляр.
 				// Сумма при этом не меняется.
 				//
@@ -351,6 +362,7 @@ func (s *ImportService) buildHolding(
 }
 
 // upsertHolding вставляет строку либо обновляет её по естественному ключу.
+// keepQty сохраняет количество номерной строки, а безномерную не меняет целиком.
 //
 // ⚠ УЖЕ ПРОСТАВЛЕННЫЙ qty_actual НЕ ЗАТИРАЕТСЯ. Повторная загрузка того же
 // файла — обычное дело (бухгалтерия прислала свежую выгрузку в середине
@@ -380,6 +392,7 @@ func (s *ImportService) upsertHolding(
 			source_sheet  = EXCLUDED.source_sheet,
 			source_row    = EXCLUDED.source_row,
 			updated_at    = NOW()
+		WHERE NOT $19
 		RETURNING (xmax = 0) AS inserted, qty_split
 	`
 	// Конфликт ловим по тому ключу, который применим к этой строке:
@@ -417,12 +430,16 @@ func (s *ImportService) upsertHolding(
 		qtyExpr = "wh_holding.qty_expected"
 	}
 
+	skipExisting := keepQty && invNorm == nil
 	err = tx.QueryRow(ctx, fmt.Sprintf(q, conflict, qtyExpr),
 		in.ItemID, in.HolderType, in.UserID, in.UserFIO,
 		in.DepartmentID, in.DepartmentName, in.WarehouseID, in.Room,
 		invNumber, invNorm, in.SerialNumber,
 		in.QtyExpected, in.QtyActual, in.Outcome, in.Note,
-		in.SourceFile, in.SourceSheet, in.SourceRow).Scan(&inserted, &qtySplit)
+		in.SourceFile, in.SourceSheet, in.SourceRow, skipExisting).Scan(&inserted, &qtySplit)
+	if err == pgx.ErrNoRows && skipExisting {
+		return false, decimal.Zero, nil
+	}
 	if err != nil {
 		return false, decimal.Zero, fmt.Errorf("строка %s:%v: %w", in.SourceFile, in.SourceRow, err)
 	}

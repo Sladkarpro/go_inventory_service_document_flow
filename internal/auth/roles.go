@@ -24,8 +24,9 @@ const (
 	RoleAnalytic = "ROLE_ANALYTIC"
 	RoleUser     = "ROLE_USER"
 
-	// Инвентарные роли. Единственная наследующая — ROLE_INVENTORY_ADMIN.
+	// Прежние прямые роли сохраняются для совместимости, вне иерархии Symfony.
 	RoleInventoryAdmin      = "ROLE_INVENTORY_ADMIN"
+	RoleInventoryManager    = "ROLE_INVENTORY_MANAGER"
 	RoleInventoryMol        = "ROLE_INVENTORY_MOL"
 	RoleInventoryViewer     = "ROLE_INVENTORY_VIEWER"
 	RoleInventoryDeptViewer = "ROLE_INVENTORY_DEPT_VIEWER"
@@ -39,7 +40,7 @@ var hierarchy = map[string][]string{
 	RoleAdmin: {
 		RoleAnalytic, "ROLE_MANAGER", "ROLE_CITIZEN_APPEAL", "ROLE_HR",
 		"ROLE_CONTRACT_APPLICATION", "ROLE_TKO", "ROLE_FINANCE",
-		"ROLE_CLIENTS_DEPARTMENT", "ROLE_MECHANIC", RoleInventoryAdmin, RoleUser,
+		"ROLE_CLIENTS_DEPARTMENT", "ROLE_MECHANIC", RoleInventoryAdmin, "ROLE_DOC_OFFICE", RoleUser,
 	},
 	// ⚠ Аналитик — все прикладные роли портала, но НИ ОДНОЙ инвентарной.
 	// Так задумано: в модуле пароли устройств и матценности, доступ выдаётся явно.
@@ -48,29 +49,25 @@ var hierarchy = map[string][]string{
 		"ROLE_TKO", "ROLE_FINANCE", "ROLE_CLIENTS_DEPARTMENT", "ROLE_MECHANIC", RoleUser,
 	},
 
-	RoleInventoryAdmin: {RoleInventoryMol, RoleInventoryViewer, RoleInventoryDeptViewer, RoleUser},
+	RoleInventoryAdmin:   {RoleInventoryManager, RoleUser},
+	RoleInventoryManager: {RoleUser},
+	"ROLE_DOC_OFFICE":    {RoleUser},
 
-	// ⚠ Три ПАРАЛЛЕЛЬНЫЕ ветки: МОЛ не наследует наблюдателя, наблюдатель не наследует
-	// начальника отдела и наоборот. Проверка «одной ролью на весь контроллер»
-	// отрезала бы МОЛа — на этом в монолите уже обожглись.
-	RoleInventoryMol:        {RoleUser},
-	RoleInventoryViewer:     {RoleUser},
-	RoleInventoryDeptViewer: {RoleUser},
-
-	"ROLE_MANAGER":              {RoleUser},
-	"ROLE_CITIZEN_APPEAL":       {RoleUser},
-	"ROLE_HR":                   {RoleUser},
-	"ROLE_CONTRACT_APPLICATION": {RoleUser},
-	"ROLE_TKO":                  {RoleUser},
-	"ROLE_FINANCE":              {RoleUser},
-	"ROLE_CLIENTS_DEPARTMENT":   {RoleUser},
-	"ROLE_MECHANIC":             {RoleUser},
+	"ROLE_MANAGER":                  {RoleUser},
+	"ROLE_CITIZEN_APPEAL":           {"ROLE_CITIZEN_APPEAL_VOICEMAIL", RoleUser},
+	"ROLE_CITIZEN_APPEAL_VOICEMAIL": {RoleUser},
+	"ROLE_HR":                       {RoleUser},
+	"ROLE_CONTRACT_APPLICATION":     {RoleUser},
+	"ROLE_TKO":                      {RoleUser},
+	"ROLE_FINANCE":                  {RoleUser},
+	"ROLE_CLIENTS_DEPARTMENT":       {RoleUser},
+	"ROLE_MECHANIC":                 {RoleUser},
 }
 
 // Expand возвращает транзитивное замыкание набора ролей.
 // Один уровень был бы недостаточен: ROLE_ADMIN → ROLE_INVENTORY_ADMIN →
-// {MOL, VIEWER, DEPT_VIEWER}, и без обхода вглубь администратор не получил бы
-// прав МОЛа. Цикл в таблице обход не подвешивает: посещённые роли не повторяются.
+// ROLE_INVENTORY_MANAGER. Цикл в таблице обход не подвешивает:
+// посещённые роли не повторяются.
 func Expand(roles []string) map[string]bool {
 	out := make(map[string]bool, len(roles)*2)
 	stack := make([]string, 0, len(roles))
@@ -112,6 +109,8 @@ func IsInventoryAdmin(roles []string) bool {
 
 // CanWrite — право менять данные инвентаризации: администратор или МОЛ.
 // Наблюдатели (VIEWER, DEPT_VIEWER) сюда не попадают — они смотрят, но не правят.
+// ROLE_INVENTORY_MANAGER требует ограничений по организациям и категориям,
+// как в Symfony; без них эта роль не даёт ни чтения, ни записи.
 func CanWrite(roles []string) bool {
 	return HasAny(roles, RoleInventoryAdmin, RoleInventoryMol)
 }
@@ -120,7 +119,7 @@ func CanWrite(roles []string) bool {
 //
 // ⚠ RoleInventoryDeptViewer СЮДА НЕ ВХОДИТ, и это не забывчивость.
 //
-// По комментарию в security.yaml монолита эта роль означает «только своё
+// По прежнему комментарию в security.yaml эта роль означает «только своё
 // подразделение и потомки». Такого ограничения в сервисе НЕТ НИ В ОДНОЙ РУЧКЕ:
 // фильтра по подразделению не существует, user.ID из токена нигде не
 // используется как скоуп. Замерено: с этой ролью читается инвентаризация
