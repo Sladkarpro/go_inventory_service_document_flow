@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/shopspring/decimal"
 
@@ -214,6 +215,11 @@ func (s *WarehouseService) Update(ctx context.Context, id int64, in repository.W
 func DecimalPtr(s string) (*decimal.Decimal, error) {
 	if s == "" {
 		return nil, nil
+	}
+	// «1e2147483647» — 13 байт, но пересчёт масштаба в decimal на нём зависает
+	// надолго. Количеству экспонента не нужна, длинные строки тоже.
+	if len(s) > 32 || strings.ContainsAny(s, "eE") {
+		return nil, apperr.New(apperr.CodeInvalidQuantity, "invalid quantity")
 	}
 	d, err := decimal.NewFromString(s)
 	if err != nil {
