@@ -292,22 +292,22 @@ func (s *ImportService) Import(ctx context.Context, path string, format parser.F
 // любых изменений остатков. Иначе два импорта разных позиций расщепят два
 // агрегата, а UNIQUE inv_number_norm сохранит только один экземпляр.
 func lockImportNumbers(ctx context.Context, tx pgx.Tx, rows []parser.Row) error {
-	keys := make([]int64, 0, len(rows))
+	const namespace int32 = 0x57485249 // WHRI: warehouse import.
+	var buckets [256]bool
 	for _, row := range rows {
 		if norm, ok := model.NormalizeInvNumber(row.InvNumber); ok {
 			h := fnv.New64a()
 			_, _ = h.Write([]byte("warehouse-import-inv:" + norm))
-			keys = append(keys, int64(h.Sum64()))
+			buckets[h.Sum64()%uint64(len(buckets))] = true
 		}
 	}
-	// Сортируем сами lock keys: даже коллизия хеша только сериализует
-	// независимые номера, не меняя порядка захвата. Освобождение — с tx.
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	for i, key := range keys {
-		if i > 0 && key == keys[i-1] {
+	// Не более 256 общих ключей независимо от размера файла. Коллизия лишь
+	// сериализует номера; возрастающий порядок исключает инверсию захвата.
+	for bucket, needed := range buckets {
+		if !needed {
 			continue
 		}
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, key); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, namespace, int32(bucket)); err != nil {
 			return fmt.Errorf("блокировка инвентарного номера: %w", err)
 		}
 	}
