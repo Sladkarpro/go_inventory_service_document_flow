@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -111,10 +113,18 @@ func (s *ImportService) Import(ctx context.Context, path string, format parser.F
 	}
 
 	err = repository.ExecTx(ctx, s.db, func(tx pgx.Tx) error {
+		if err := lockImportNumbers(ctx, tx, res.Rows); err != nil {
+			return err
+		}
 		names := make([]string, 0, len(res.Rows))
 		for _, r := range res.Rows {
 			names = append(names, r.ItemName)
 		}
+		// EnsureItems блокирует строки каталога: порядок должен совпадать у
+		// разных файлов. Stable сохраняет первое написание одинаковых имён.
+		sort.SliceStable(names, func(i, j int) bool {
+			return model.NormalizeName(names[i]) < model.NormalizeName(names[j])
+		})
 		itemIndex, itemsCreated, err := repository.EnsureItems(ctx, tx, names)
 		if err != nil {
 			return fmt.Errorf("каталог позиций: %w", err)
@@ -287,6 +297,32 @@ func (s *ImportService) Import(ctx context.Context, path string, format parser.F
 		"warnings", len(report.Warnings))
 
 	return report, nil
+}
+
+// lockImportNumbers резервирует и ещё отсутствующие номера до EnsureItems и
+// любых изменений остатков. Иначе два импорта разных позиций расщепят два
+// агрегата, а UNIQUE inv_number_norm сохранит только один экземпляр.
+func lockImportNumbers(ctx context.Context, tx pgx.Tx, rows []parser.Row) error {
+	const namespace int32 = 0x57485249 // WHRI: warehouse import.
+	var buckets [256]bool
+	for _, row := range rows {
+		if norm, ok := model.NormalizeInvNumber(row.InvNumber); ok {
+			h := fnv.New64a()
+			_, _ = h.Write([]byte("warehouse-import-inv:" + norm))
+			buckets[h.Sum64()%uint64(len(buckets))] = true
+		}
+	}
+	// Не более 256 общих ключей независимо от размера файла. Коллизия лишь
+	// сериализует номера; возрастающий порядок исключает инверсию захвата.
+	for bucket, needed := range buckets {
+		if !needed {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, namespace, int32(bucket)); err != nil {
+			return fmt.Errorf("блокировка инвентарного номера: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *ImportService) buildHolding(
