@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -111,10 +113,18 @@ func (s *ImportService) Import(ctx context.Context, path string, format parser.F
 	}
 
 	err = repository.ExecTx(ctx, s.db, func(tx pgx.Tx) error {
+		if err := lockImportNumbers(ctx, tx, res.Rows); err != nil {
+			return err
+		}
 		names := make([]string, 0, len(res.Rows))
 		for _, r := range res.Rows {
 			names = append(names, r.ItemName)
 		}
+		// EnsureItems блокирует строки каталога: порядок должен совпадать у
+		// разных файлов. Stable сохраняет первое написание одинаковых имён.
+		sort.SliceStable(names, func(i, j int) bool {
+			return model.NormalizeName(names[i]) < model.NormalizeName(names[j])
+		})
 		itemIndex, itemsCreated, err := repository.EnsureItems(ctx, tx, names)
 		if err != nil {
 			return fmt.Errorf("каталог позиций: %w", err)
@@ -276,6 +286,32 @@ func (s *ImportService) Import(ctx context.Context, path string, format parser.F
 		"warnings", len(report.Warnings))
 
 	return report, nil
+}
+
+// lockImportNumbers резервирует и ещё отсутствующие номера до EnsureItems и
+// любых изменений остатков. Иначе два импорта разных позиций расщепят два
+// агрегата, а UNIQUE inv_number_norm сохранит только один экземпляр.
+func lockImportNumbers(ctx context.Context, tx pgx.Tx, rows []parser.Row) error {
+	keys := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		if norm, ok := model.NormalizeInvNumber(row.InvNumber); ok {
+			h := fnv.New64a()
+			_, _ = h.Write([]byte("warehouse-import-inv:" + norm))
+			keys = append(keys, int64(h.Sum64()))
+		}
+	}
+	// Сортируем сами lock keys: даже коллизия хеша только сериализует
+	// независимые номера, не меняя порядка захвата. Освобождение — с tx.
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	for i, key := range keys {
+		if i > 0 && key == keys[i-1] {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, key); err != nil {
+			return fmt.Errorf("блокировка инвентарного номера: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *ImportService) buildHolding(
