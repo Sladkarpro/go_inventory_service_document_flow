@@ -157,13 +157,14 @@ func (r *HoldingRepository) List(ctx context.Context, f HoldingFilters) ([]model
 		return nil, 0, err
 	}
 
-	listSQL, listArgs, err := r.buildQuery(f).
+	q := r.buildQuery(f).
 		Columns(holdingColumns, "i.name", "w.name",
 			"(SELECT COUNT(*) FROM wh_credential c WHERE c.holding_id = h.id)").
-		OrderBy("i.name", "h.id").
-		Limit(uint64(f.Limit)).
-		Offset(uint64(f.Offset)).
-		ToSql()
+		OrderBy("i.name", "h.id")
+	if f.Limit > 0 {
+		q = q.Limit(uint64(f.Limit)).Offset(uint64(f.Offset))
+	}
+	listSQL, listArgs, err := q.ToSql()
 	if err != nil {
 		return nil, 0, err
 	}
@@ -412,7 +413,8 @@ func (r *HoldingRepository) Rooms(ctx context.Context) ([]string, error) {
 }
 
 func (r *HoldingRepository) ListByItem(ctx context.Context, itemID int64) ([]model.Holding, error) {
-	items, _, err := r.List(ctx, HoldingFilters{ItemID: &itemID, Limit: 1000})
+	// Карточка позиции не имеет пагинации: возвращаем все её закрепления.
+	items, _, err := r.List(ctx, HoldingFilters{ItemID: &itemID})
 	return items, err
 }
 
